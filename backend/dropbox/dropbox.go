@@ -50,7 +50,6 @@ import (
 	"github.com/rclone/rclone/fs/config/obscure"
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/hash"
-	"github.com/rclone/rclone/lib/atexit"
 	"github.com/rclone/rclone/lib/encoder"
 	"github.com/rclone/rclone/lib/oauthutil"
 	"github.com/rclone/rclone/lib/pacer"
@@ -221,13 +220,17 @@ type Object struct {
 
 // batcher holds info about the current items waiting for upload
 type batcher struct {
-	f        *Fs                             // Fs this batch is part of
-	mu       sync.Mutex                      // lock for vars below
-	commitMu sync.Mutex                      // lock for waiting for batch
-	maxBatch int                             // maximum size for batch
-	active   int                             // number of batches being sent
-	items    []*files.UploadSessionFinishArg // current uncommitted files
-	atexit   atexit.FnHandle                 // atexit handle
+	f        *Fs        // Fs this batch is part of
+	mu       sync.Mutex // lock for vars below
+	maxBatch int        // maximum size for batch
+	//	active   int                             // number of batches being sent
+	items   []*files.UploadSessionFinishArg // current uncommitted files
+	results []chan<- batcherResponse
+}
+
+type batcherResponse struct {
+	err   error
+	entry *files.FileMetadata
 }
 
 // newBatcher creates a new batcher structure
@@ -242,29 +245,47 @@ func newBatcher(f *Fs, maxBatch int) *batcher {
 // successfully started
 //
 // This should be paired with End
-func (b *batcher) Start() bool {
-	if b.maxBatch <= 0 {
-		return false
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.active++
-	// FIXME set a timer or something
-	return true
+// func (b *batcher) Start() bool {
+// 	if b.maxBatch <= 0 {
+// 		return false
+// 	}
+// 	b.mu.Lock()
+// 	defer b.mu.Unlock()
+// 	b.active++
+// 	// FIXME set a timer or something
+// 	return true
+// }
+
+// Batching returns true if batching is active
+func (b *batcher) Batching() bool {
+	return b.maxBatch > 0
 }
 
 // End ends adding an item
-func (b *batcher) End(started bool) error {
-	if !started {
-		return nil
+// func (b *batcher) End(started bool) error {
+// 	if !started {
+// 		return nil
+// 	}
+// 	b.mu.Lock()
+// 	defer b.mu.Unlock()
+// 	b.active--
+// 	if len(b.items) < b.maxBatch {
+// 		return nil
+// 	}
+// 	return b._commit(false)
+// }
+
+// clear all the items in the batch regardless of whether finished or not
+func (b *batcher) _clear() {
+	b.items = nil
+	b.results = nil
+}
+
+// signal an error to all the waiting items and clear the batch
+func (b *batcher) _signalErr(err error) {
+	for _, result := range b.results {
+		result <- batcherResponse{err: err}
 	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.active--
-	if len(b.items) < b.maxBatch {
-		return nil
-	}
-	return b._commit(false)
 }
 
 // Waits for the batch to complete - call with batchMu held
@@ -273,7 +294,7 @@ func (b *batcher) _waitForBatchResult(res *files.UploadSessionFinishBatchLaunch)
 		return res.Complete, nil
 	}
 	var batchStatus *files.UploadSessionFinishBatchJobStatus
-	sleepTime := time.Second
+	sleepTime := 100 * time.Millisecond
 	const maxTries = 120
 	for try := 1; try <= maxTries; try++ {
 		err = b.f.pacer.Call(func() (bool, error) {
@@ -283,16 +304,19 @@ func (b *batcher) _waitForBatchResult(res *files.UploadSessionFinishBatchLaunch)
 			return shouldRetry(err)
 		})
 		if err != nil {
-			fs.Errorf(b.f, "failed to wait for batch: %v", err)
-			break
+			return nil, errors.Wrap(err, "failed to wait for batch")
 		}
 		if batchStatus.Tag == "complete" {
 			break
 		}
 		fs.Debugf(b.f, "sleeping for %v to wait for batch to complete, try %d/%d", sleepTime, try, maxTries)
 		time.Sleep(sleepTime)
+		sleepTime *= 2
+		if sleepTime > time.Second {
+			sleepTime = time.Second
+		}
 	}
-	return batchStatus.Complete, nil
+	return batchStatus.Complete, err
 }
 
 // commit a batch - call with batchMu held
@@ -300,7 +324,14 @@ func (b *batcher) _waitForBatchResult(res *files.UploadSessionFinishBatchLaunch)
 // if finalizing is true then it doesn't unregister Finalize as this
 // causes a deadlock during finalization.
 func (b *batcher) _commit(finalizing bool) (err error) {
-	b.commitMu.Lock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// If commit fails then
+	defer func() {
+		if err != nil {
+			b._signalErr(err)
+		}
+	}()
 	batch := "batch"
 	if finalizing {
 		batch = "last batch"
@@ -323,44 +354,64 @@ func (b *batcher) _commit(finalizing bool) (err error) {
 		return err != nil, err
 	})
 	if err != nil {
-		b.commitMu.Unlock()
+		return errors.Wrap(err, "batch commit failed")
+	}
+
+	// Wait for the batch to finish
+	complete, err := b._waitForBatchResult(res)
+	if err != nil {
 		return err
 	}
 
-	// Clear batch
-	b.items = nil
-
-	// If finalizing, don't unregister or get result
-	if finalizing {
-		b.commitMu.Unlock()
-		return nil
+	// Check we got the right number of items
+	if len(complete.Entries) != len(b.results) {
+		return errors.Errorf("Expecting %d items in batch but got %d", len(b.results), len(complete.Entries))
+	}
+	for i := range b.results {
+		item := complete.Entries[i]
+		if item.Tag == "success" {
+			b.results[i] <- batcherResponse{
+				entry: item.Success,
+			}
+		} else {
+			what := "unknown failure"
+			if item.Failure != nil {
+				what = item.Failure.Tag
+			}
+			b.results[i] <- batcherResponse{
+				err: errors.Errorf("batch upload failed: %s", what),
+			}
+		}
 	}
 
-	// Unregister the atexit since queue is empty
-	atexit.Unregister(b.atexit)
-	b.atexit = nil
-
-	// Wait for the batch to finish before we proceed in the background
-	go func() {
-		defer b.commitMu.Unlock()
-		_, err = b._waitForBatchResult(res)
-		if err != nil {
-			fs.Errorf(b.f, "Error waiting for batch to finish: %v", err)
-		}
-	}()
-
+	b._clear()
 	return nil
 }
 
 // Add adds a finished item to the batch
-func (b *batcher) Add(commitInfo *files.UploadSessionFinishArg) {
+func (b *batcher) Add(commitInfo *files.UploadSessionFinishArg, result chan<- batcherResponse) {
 	fs.Debugf(b.f, "adding %q to batch", commitInfo.Commit.Path)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.items = append(b.items, commitInfo)
-	if b.atexit == nil {
-		b.atexit = atexit.Register(b.Finalize)
+	b.results = append(b.results, result)
+	// FIXME do we need atexit any more?
+	if len(b.items) >= b.maxBatch {
+		go func() {
+			err := b._commit(false)
+			if err != nil {
+				fs.Errorf(b.f, "Failed to finalize last batch: %v", err)
+			}
+		}()
 	}
+}
+
+// Commit commits the file using a batch call
+func (b *batcher) Commit(commitInfo *files.UploadSessionFinishArg) (entry *files.FileMetadata, err error) {
+	resp := make(chan batcherResponse, 1)
+	b.Add(commitInfo, resp)
+	result := <-resp
+	return result.entry, result.err
 }
 
 // Finalize finishes any pending batches
@@ -1231,13 +1282,14 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 // unknown (i.e. -1) or smaller than uploadChunkSize, the method incurs an
 // avoidable request to the Dropbox API that does not carry payload.
 func (o *Object) uploadChunked(in0 io.Reader, commitInfo *files.CommitInfo, size int64) (entry *files.FileMetadata, err error) {
-	batching := o.fs.batcher.Start()
-	defer func() {
-		batchErr := o.fs.batcher.End(batching)
-		if err != nil {
-			err = batchErr
-		}
-	}()
+	batching := o.fs.batcher.Batching()
+	//batching := o.fs.batcher.Start()
+	// defer func() {
+	// 	batchErr := o.fs.batcher.End(batching)
+	// 	if err != nil {
+	// 		err = batchErr
+	// 	}
+	// }()
 	chunkSize := int64(o.fs.opt.ChunkSize)
 	chunks := 0
 	if size != -1 {
@@ -1352,8 +1404,7 @@ func (o *Object) uploadChunked(in0 io.Reader, commitInfo *files.CommitInfo, size
 				return nil, err
 			}
 		}
-		o.fs.batcher.Add(args)
-		return nil, nil
+		return o.fs.batcher.Commit(args)
 	}
 
 	fmtChunk(currentChunk, true)
