@@ -27,6 +27,7 @@ import (
 	"github.com/rclone/rclone/lib/encoder"
 	"github.com/rclone/rclone/lib/file"
 	"github.com/rclone/rclone/lib/readers"
+	"golang.org/x/text/unicode/norm"
 )
 
 // Constants
@@ -71,12 +72,21 @@ points, as you explicitly acknowledge that they should be skipped.`,
 			NoPrefix: true,
 			Advanced: true,
 		}, {
-			Name: "no_unicode_normalization",
-			Help: `Don't apply unicode normalization to paths and filenames (Deprecated)
+			Name: "unicode_normalization",
+			Help: `Apply unicode NFC normalization to paths and filenames
 
-This flag is deprecated now.  Rclone no longer normalizes unicode file
-names, but it compares them with unicode normalization in the sync
-routine instead.`,
+This flag can be used to normalize file names into unicode NFC form
+that are read from the local filesystem.
+
+Rclone does not normally touch the encoding of file names it reads from
+the file system.
+
+This can be useful when using macOS as it normally provides decomposed (NFD)
+unicode which in some language (eg Korean) doesn't display properly on
+some OSes.
+
+Note that rclone compares filenames with unicode normalization in the sync
+routine so this flag shouldn't normally be used.`,
 			Default:  false,
 			Advanced: true,
 		}, {
@@ -170,7 +180,7 @@ type Options struct {
 	FollowSymlinks    bool                 `config:"copy_links"`
 	TranslateSymlinks bool                 `config:"links"`
 	SkipSymlinks      bool                 `config:"skip_links"`
-	NoUTFNorm         bool                 `config:"no_unicode_normalization"`
+	UTFNorm           bool                 `config:"unicode_normalization"`
 	NoCheckUpdated    bool                 `config:"no_check_updated"`
 	NoUNC             bool                 `config:"nounc"`
 	OneFileSystem     bool                 `config:"one_file_system"`
@@ -226,10 +236,6 @@ func NewFs(name, root string, m configmap.Mapper) (fs.Fs, error) {
 	}
 	if opt.TranslateSymlinks && opt.FollowSymlinks {
 		return nil, errLinksAndCopyLinks
-	}
-
-	if opt.NoUTFNorm {
-		fs.Errorf(nil, "The --local-no-unicode-normalization flag is deprecated and will be removed")
 	}
 
 	f := &Fs{
@@ -494,6 +500,9 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 }
 
 func (f *Fs) cleanRemote(dir, filename string) (remote string) {
+	if f.opt.UTFNorm {
+		filename = norm.NFC.String(filename)
+	}
 	remote = path.Join(dir, f.opt.Enc.ToStandardName(filename))
 
 	if !utf8.ValidString(filename) {
