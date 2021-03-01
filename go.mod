@@ -81,3 +81,5 @@ require (
 	storj.io/common v0.0.0-20210203145648-3768017a858e // indirect
 	storj.io/uplink v1.4.5
 )
+
+replace github.com/jlaffaye/ftp v0.0.0-20201112195030-9aae4d151126 => github.com/ncw/ftp v0.0.0-20210301160120-a4e965082389
