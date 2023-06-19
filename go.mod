@@ -70,7 +70,7 @@ require (
 	golang.org/x/net v0.0.0-20210119194325-5f4716e94777
 	golang.org/x/oauth2 v0.0.0-20210201163806-010130855d6c
 	golang.org/x/sync v0.0.0-20201207232520-09787c993a3a
-	golang.org/x/sys v0.0.0-20210313110737-8e9fff1a3a18
+	golang.org/x/sys v0.1.0
 	golang.org/x/term v0.0.0-20201210144234-2321bbc49cbf // indirect
 	golang.org/x/text v0.3.5
 	golang.org/x/time v0.0.0-20201208040808-7e3f01d25324
