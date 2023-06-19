@@ -66,13 +66,12 @@ require (
 	go.opencensus.io v0.22.6 // indirect
 	go.uber.org/zap v1.16.0 // indirect
 	goftp.io/server v0.4.1
-	golang.org/x/crypto v0.0.0-20210220033148-5ea612d1eb83
-	golang.org/x/net v0.0.0-20210119194325-5f4716e94777
+	golang.org/x/crypto v0.0.0-20210921155107-089bfa567519
+	golang.org/x/net v0.7.0
 	golang.org/x/oauth2 v0.0.0-20210201163806-010130855d6c
-	golang.org/x/sync v0.0.0-20201207232520-09787c993a3a
-	golang.org/x/sys v0.0.0-20210313110737-8e9fff1a3a18
-	golang.org/x/term v0.0.0-20201210144234-2321bbc49cbf // indirect
-	golang.org/x/text v0.3.5
+	golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4
+	golang.org/x/sys v0.5.0
+	golang.org/x/text v0.7.0
 	golang.org/x/time v0.0.0-20201208040808-7e3f01d25324
 	google.golang.org/api v0.38.0
 	google.golang.org/genproto v0.0.0-20210203152818-3206188e46ba // indirect
