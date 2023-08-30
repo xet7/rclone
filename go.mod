@@ -77,7 +77,7 @@ require (
 	google.golang.org/api v0.38.0
 	google.golang.org/genproto v0.0.0-20210203152818-3206188e46ba // indirect
 	gopkg.in/yaml.v2 v2.4.0
-	gopkg.in/yaml.v3 v3.0.0-20210107192922-496545a6307b // indirect
+	gopkg.in/yaml.v3 v3.0.0 // indirect
 	storj.io/common v0.0.0-20210203145648-3768017a858e // indirect
 	storj.io/uplink v1.4.5
 )
